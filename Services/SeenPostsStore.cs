@@ -5,7 +5,7 @@ namespace RssTracker.Services;
 
 public class SeenPostsStore
 {
-    private readonly string _filePath;
+    private readonly FileInfo _filePath;
     private readonly long _maxFileSizeBytes;
     private readonly ConcurrentDictionary<string, DateTime> _seenPosts;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
@@ -13,7 +13,7 @@ public class SeenPostsStore
 
     public SeenPostsStore(string filePath, long maxFileSizeBytes, ILogger<SeenPostsStore> logger)
     {
-        _filePath = filePath;
+        _filePath = new FileInfo(filePath);
         _maxFileSizeBytes = maxFileSizeBytes;
         _logger = logger;
         _seenPosts = new ConcurrentDictionary<string, DateTime>();
@@ -21,7 +21,7 @@ public class SeenPostsStore
 
     public async Task LoadAsync()
     {
-        if (!File.Exists(_filePath))
+        if (!_filePath.Exists)
         {
             _logger.LogInformation("Seen posts file does not exist, starting fresh");
             return;
@@ -30,7 +30,7 @@ public class SeenPostsStore
         try
         {
             await _fileLock.WaitAsync();
-            var json = await File.ReadAllTextAsync(_filePath);
+            var json = await File.ReadAllTextAsync(_filePath.FullName);
             var data = JsonSerializer.Deserialize<Dictionary<string, DateTime>>(json);
             
             if (data != null)
@@ -39,12 +39,12 @@ public class SeenPostsStore
                 {
                     _seenPosts.TryAdd(kvp.Key, kvp.Value);
                 }
-                _logger.LogInformation("Loaded {Count} seen posts from {FilePath}", _seenPosts.Count, _filePath);
+                _logger.LogInformation("Loaded {Count} seen posts from {FilePath}", _seenPosts.Count, _filePath.FullName);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error loading seen posts from {FilePath}", _filePath);
+            _logger.LogError(ex, "Error loading seen posts from {FilePath}", _filePath.FullName);
         }
         finally
         {
@@ -85,12 +85,12 @@ public class SeenPostsStore
                 _logger.LogInformation("Pruned {Count} entries, new size: {Size} bytes", removeCount, jsonBytes.Length);
             }
 
-            await File.WriteAllBytesAsync(_filePath, jsonBytes);
-            _logger.LogDebug("Saved {Count} seen posts to {FilePath}", _seenPosts.Count, _filePath);
+            await File.WriteAllBytesAsync(_filePath.FullName, jsonBytes);
+            _logger.LogDebug("Saved {Count} seen posts to {FilePath}", _seenPosts.Count, _filePath.FullName);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error saving seen posts to {FilePath}", _filePath);
+            _logger.LogError(ex, "Error saving seen posts to {FilePath}", _filePath.FullName);
         }
         finally
         {
