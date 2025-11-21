@@ -2,11 +2,11 @@ namespace RssTracker;
 
 public class Settings
 {
-    public string[] Subreddits { get; set; } = Array.Empty<string>();
-    public string[] KeywordPatterns { get; set; } = Array.Empty<string>();
+    public string[] Subreddits { get; set; } = [];
+    public string[] KeywordPatterns { get; set; } = [];
     public string DiscordWebhookUrl { get; set; } = string.Empty;
-    public int PollIntervalSeconds { get; set; } = 300;
+    public int PollIntervalSeconds { get; set; } = 30; // 30 seconds default
     public string SeenPostsFilePath { get; set; } = "seenposts.json";
-    public long MaxSeenPostsFileSizeBytes { get; set; } = 1048576; // 1MB default
-    public int MaxRetryDelaySeconds { get; set; } = 21600; // 6 hours default
+    public long MaxSeenPostsFileSizeBytes { get; set; } = 31_457_280; // 30MB default
+    public int MaxRetryDelaySeconds { get; set; } = 3600; // 1 hour default
 }
