@@ -94,7 +94,7 @@ Description=Reddit RSS Tracker
 After=network.target
 
 [Service]
-Type=notify
+Type=simple
 WorkingDirectory=/path/to/publish
 ExecStart=/usr/bin/dotnet /path/to/publish/RssTracker.dll
 Restart=always
