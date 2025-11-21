@@ -103,10 +103,10 @@ public class Worker : BackgroundService
                         // Send Discord notification
                         await _discordNotifier.SendNotificationAsync(item, matchedPattern);
                         totalMatches++;
-                    }
 
-                    // Mark as seen regardless of match
-                    _seenPostsStore.MarkAsSeen(item.Id);
+                        // Mark as seen only if matched to prevent duplicate notifications
+                        _seenPostsStore.MarkAsSeen(item.Id);
+                    }
                 }
             }
             catch (Exception ex)
