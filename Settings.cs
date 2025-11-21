@@ -1,7 +1,10 @@
+
 namespace RssTracker;
 
 public class Settings
 {
+    public const string Key = "RssTrackerSettings";
+
     public string[] Subreddits { get; set; } = [];
     public string[] KeywordPatterns { get; set; } = [];
     public string DiscordWebhookUrl { get; set; } = string.Empty;
