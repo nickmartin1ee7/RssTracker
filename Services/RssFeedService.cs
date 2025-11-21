@@ -20,9 +20,15 @@ public class RssFeedService
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; RssTracker/1.0)");
     }
 
-    public async Task<List<RssFeedItem>> FetchFeedAsync(string subreddit, string feedType)
+    // Changed feedType from string to enum RssFeedItemType
+    public async Task<List<RssFeedItem>> FetchFeedAsync(string subreddit, RssFeedItemType itemType)
     {
-        var url = feedType == "posts" 
+        if (itemType is not (RssFeedItemType.Post or RssFeedItemType.Comment))
+        {
+            throw new ArgumentOutOfRangeException(nameof(itemType), itemType, "Only Post and Comment are valid feed types.");
+        }
+
+        var url = itemType == RssFeedItemType.Post 
             ? $"https://www.reddit.com/r/{subreddit}/.rss"
             : $"https://www.reddit.com/r/{subreddit}/comments/.rss";
 
@@ -34,7 +40,7 @@ public class RssFeedService
         {
             try
             {
-                _logger.LogDebug("Fetching {FeedType} feed for r/{Subreddit} (attempt {Attempt})", feedType, subreddit, attempt + 1);
+                _logger.LogDebug("Fetching {FeedType} feed for r/{Subreddit} (attempt {Attempt})", itemType, subreddit, attempt + 1);
                 
                 var response = await _httpClient.GetAsync(url);
                 response.EnsureSuccessStatusCode();
@@ -52,14 +58,14 @@ public class RssFeedService
                         Content = GetContentFromItem(item),
                         Link = item.Links.FirstOrDefault()?.Uri.ToString() ?? string.Empty,
                         Timestamp = item.PublishDate,
-                        Type = feedType == "posts" ? "Post" : "Comment"
+                        Type = itemType
                     };
 
                     items.Add(feedItem);
                 }
 
                 _logger.LogInformation("Successfully fetched {Count} items from {FeedType} feed for r/{Subreddit}", 
-                    items.Count, feedType, subreddit);
+                    items.Count, itemType, subreddit);
                 
                 return items;
             }
@@ -68,7 +74,7 @@ public class RssFeedService
                 attempt++;
                 var delay = CalculateExponentialBackoff(attempt, _maxRetryDelaySeconds);
                 _logger.LogWarning(ex, "HTTP error fetching feed for r/{Subreddit} {FeedType}, attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s", 
-                    subreddit, feedType, attempt, maxAttempts, delay);
+                    subreddit, itemType, attempt, maxAttempts, delay);
 
                 if (attempt < maxAttempts)
                 {
@@ -77,7 +83,7 @@ public class RssFeedService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error fetching feed for r/{Subreddit} {FeedType}", subreddit, feedType);
+                _logger.LogError(ex, "Unexpected error fetching feed for r/{Subreddit} {FeedType}", subreddit, itemType);
                 break;
             }
         }

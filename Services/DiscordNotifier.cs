@@ -70,16 +70,19 @@ public class DiscordNotifier
             ? string.Concat(item.Content.AsSpan(0, 997), "...")
             : item.Content;
 
+        var titleType = item.Type == RssFeedItemType.Post ? "Post" : item.Type == RssFeedItemType.Comment ? "Comment" : "Item";
+        var color = item.Type == RssFeedItemType.Post ? 0x5865F2 : item.Type == RssFeedItemType.Comment ? 0xEB459E : 0x2F3136;
+
         return new
         {
             embeds = new[]
             {
                 new
                 {
-                    title = $"🔔 Keyword Match: {item.Type}",
+                    title = $"🔔 Keyword Match: {titleType}",
                     description = contentPreview,
                     url = item.Link,
-                    color = item.Type == "Post" ? 0x5865F2 : 0xEB459E, // Blue for posts, pink for comments
+                    color,
                     fields = new[]
                     {
                         new { name = "Author", value = item.Author, inline = true },

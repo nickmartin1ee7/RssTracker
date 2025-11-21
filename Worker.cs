@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using RssTracker.Services;
+using RssTracker.Models;
 
 namespace RssTracker;
 
@@ -73,8 +74,8 @@ public class Worker : BackgroundService
 
             try
             {
-                var postItems = await _rssFeedService.FetchFeedAsync(subreddit, "posts");
-                var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, "comments");
+                var postItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Post);
+                var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Comment);
 
                 var allItems = postItems.Concat(commentItems).ToList();
                 _logger.LogDebug("Fetched {Count} total items from r/{Subreddit}", allItems.Count, subreddit);

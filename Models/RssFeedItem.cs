@@ -7,5 +7,5 @@ public class RssFeedItem
     public string Content { get; set; } = string.Empty;
     public string Link { get; set; } = string.Empty;
     public DateTimeOffset Timestamp { get; set; }
-    public string Type { get; set; } = string.Empty; // "Post" or "Comment"
+    public RssFeedItemType Type { get; set; } = RssFeedItemType.Unknown;
 }
