@@ -67,7 +67,7 @@ public class DiscordNotifier
     {
         // Truncate content to 1000 characters for Discord embed
         var contentPreview = item.Content.Length > 1000 
-            ? item.Content.Substring(0, 997) + "..." 
+            ? string.Concat(item.Content.AsSpan(0, 997), "...")
             : item.Content;
 
         return new

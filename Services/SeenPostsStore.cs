@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 
 namespace RssTracker.Services;
 
 public class SeenPostsStore
 {
+    private static readonly JsonSerializerOptions CachedJsonOptions = new() { WriteIndented = true };
+
     private readonly FileInfo _filePath;
     private readonly long _maxFileSizeBytes;
     private readonly ConcurrentDictionary<string, DateTime> _seenPosts;
@@ -59,8 +62,8 @@ public class SeenPostsStore
             await _fileLock.WaitAsync();
 
             var data = _seenPosts.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
-            var jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var json = JsonSerializer.Serialize(data, CachedJsonOptions);
+            var jsonBytes = Encoding.UTF8.GetBytes(json);
 
             // Check if we need to prune
             if (jsonBytes.Length > _maxFileSizeBytes)
@@ -79,8 +82,8 @@ public class SeenPostsStore
 
                 // Re-serialize after pruning
                 data = _seenPosts.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-                json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
-                jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
+                json = JsonSerializer.Serialize(data, CachedJsonOptions);
+                jsonBytes = Encoding.UTF8.GetBytes(json);
                 
                 _logger.LogInformation("Pruned {Count} entries, new size: {Size} bytes", removeCount, jsonBytes.Length);
             }

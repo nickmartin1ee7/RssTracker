@@ -6,22 +6,24 @@ namespace RssTracker;
 public class Worker : BackgroundService
 {
     private readonly ILogger<Worker> _logger;
-    private readonly Settings _settings;
+    private readonly IOptionsMonitor<Settings> _settingsMonitor;
     private readonly SeenPostsStore _seenPostsStore;
     private readonly RssFeedService _rssFeedService;
     private readonly KeywordMatcher _keywordMatcher;
     private readonly DiscordNotifier _discordNotifier;
 
+    private Settings Settings => _settingsMonitor.CurrentValue;
+
     public Worker(
         ILogger<Worker> logger,
-        IOptions<Settings> settings,
+        IOptionsMonitor<Settings> settingsMonitor,
         SeenPostsStore seenPostsStore,
         RssFeedService rssFeedService,
         KeywordMatcher keywordMatcher,
         DiscordNotifier discordNotifier)
     {
         _logger = logger;
-        _settings = settings.Value;
+        _settingsMonitor = settingsMonitor;
         _seenPostsStore = seenPostsStore;
         _rssFeedService = rssFeedService;
         _keywordMatcher = keywordMatcher;
@@ -32,12 +34,11 @@ public class Worker : BackgroundService
     {
         _logger.LogInformation("RssTracker Worker starting up");
         _logger.LogInformation("Monitoring {Count} subreddits with {PatternCount} keyword patterns", 
-            _settings.Subreddits.Length, _settings.KeywordPatterns.Length);
+            Settings.Subreddits.Length, Settings.KeywordPatterns.Length);
 
-        // Load previously seen posts
         await _seenPostsStore.LoadAsync();
 
-        var pollInterval = TimeSpan.FromSeconds(_settings.PollIntervalSeconds);
+        var pollInterval = TimeSpan.FromSeconds(Settings.PollIntervalSeconds);
         _logger.LogInformation("Poll interval set to {Interval}", pollInterval);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -45,8 +46,6 @@ public class Worker : BackgroundService
             try
             {
                 await ProcessFeedsAsync(stoppingToken);
-                
-                // Save seen posts after each cycle
                 await _seenPostsStore.SaveAsync();
             }
             catch (Exception ex)
@@ -57,7 +56,6 @@ public class Worker : BackgroundService
             await Task.Delay(pollInterval, stoppingToken);
         }
 
-        // Save on shutdown
         await _seenPostsStore.SaveAsync();
         _logger.LogInformation("RssTracker Worker shutting down");
     }
@@ -65,16 +63,16 @@ public class Worker : BackgroundService
     private async Task ProcessFeedsAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Starting feed processing cycle");
+
         var totalMatches = 0;
 
-        foreach (var subreddit in _settings.Subreddits)
+        foreach (var subreddit in Settings.Subreddits)
         {
             if (stoppingToken.IsCancellationRequested)
                 break;
 
             try
             {
-                // Fetch both posts and comments
                 var postItems = await _rssFeedService.FetchFeedAsync(subreddit, "posts");
                 var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, "comments");
 
