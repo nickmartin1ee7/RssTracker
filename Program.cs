@@ -92,6 +92,7 @@ static void ConfigureServices(HostApplicationBuilder builder, Settings settings)
     });
 
     builder.Services.AddSingleton<SubredditPollTracker>();
+    builder.Services.AddSingleton<RateLimitMonitor>();
 
     // Worker service
     builder.Services.AddHostedService<Worker>();

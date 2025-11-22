@@ -34,4 +34,10 @@ public class SubredditPollTracker
     }
 
     public bool IsEmpty => _lastPollTimes.IsEmpty;
+
+    public string? GetOldest()
+    {
+        if (_lastPollTimes.IsEmpty) return null;
+        return _lastPollTimes.OrderBy(kvp => kvp.Value).First().Key;
+    }
 }

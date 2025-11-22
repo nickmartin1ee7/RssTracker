@@ -13,6 +13,7 @@ public class Worker : BackgroundService
     private readonly KeywordMatcher _keywordMatcher;
     private readonly DiscordNotifier _discordNotifier;
     private readonly SubredditPollTracker _pollTracker;
+    private readonly RateLimitMonitor _rateLimitMonitor;
 
     private Settings Settings => _settingsMonitor.CurrentValue;
 
@@ -23,7 +24,8 @@ public class Worker : BackgroundService
         RssFeedService rssFeedService,
         KeywordMatcher keywordMatcher,
         DiscordNotifier discordNotifier,
-        SubredditPollTracker pollTracker)
+        SubredditPollTracker pollTracker,
+        RateLimitMonitor rateLimitMonitor)
     {
         _logger = logger;
         _settingsMonitor = settingsMonitor;
@@ -32,135 +34,84 @@ public class Worker : BackgroundService
         _keywordMatcher = keywordMatcher;
         _discordNotifier = discordNotifier;
         _pollTracker = pollTracker;
+        _rateLimitMonitor = rateLimitMonitor;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("RssTracker Worker starting up");
-        _logger.LogInformation("Monitoring {Count} subreddits with {PatternCount} keyword patterns (MaxRequestsPerMinute={Max})",
-            Settings.Subreddits.Length, Settings.KeywordPatterns.Length, Settings.MaxRequestsPerMinute);
+        _logger.LogInformation("Monitoring {Count} subreddits with {PatternCount} keyword patterns", 
+            Settings.Subreddits.Length, Settings.KeywordPatterns.Length);
 
         _pollTracker.Initialize(Settings.Subreddits);
         await _seenPostsStore.LoadAsync();
 
-        var windowStart = DateTime.UtcNow;
-        var requestCount = 0;
-        var pollsExecuted = 0;
-        const int requestsPerSubreddit = 2; // posts + comments
+        const int requestsPerSubreddit = 2;
+        DateTime lastPollTime = DateTime.UtcNow.AddSeconds(-5); // allow immediate first poll
+        int pollSequence = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            // Check if window expired
-            var timeSinceWindowStart = DateTime.UtcNow - windowStart;
-            if (timeSinceWindowStart >= TimeSpan.FromSeconds(60))
+            var spacing = _rateLimitMonitor.ComputeSpacing(requestsPerSubreddit, Settings.MaxRequestsPerMinute);
+            var nextAllowed = lastPollTime + spacing;
+            var snapshot = _rateLimitMonitor.GetCurrent();
+
+            if (snapshot != null && snapshot.Remaining < requestsPerSubreddit)
             {
-                // Reset window
-                windowStart = DateTime.UtcNow;
-                requestCount = 0;
-                pollsExecuted = 0;
-                _logger.LogDebug("Window reset at {Time}", windowStart);
-            }
-
-            var remainingCapacity = Settings.MaxRequestsPerMinute - requestCount;
-
-            // If no capacity left in current window, wait until next window
-            if (remainingCapacity < requestsPerSubreddit)
-            {
-                var until = windowStart.AddMinutes(1) - DateTime.UtcNow;
-                if (until > TimeSpan.Zero)
-                {
-                    _logger.LogDebug("Window exhausted (used {Used}/{Max}); sleeping {Sleep} until next window", 
-                        requestCount, Settings.MaxRequestsPerMinute, until);
-                    try
-                    {
-                        await Task.Delay(until, stoppingToken);
-                    }
-                    catch
-                    {
-                        // Ignore cancellation
-                    }
-                }
-
-                // Reset window
-                windowStart = DateTime.UtcNow;
-                requestCount = 0;
-                pollsExecuted = 0;
+                _logger.LogWarning("Rate limit low Remaining={Remaining} < {Needed}; sleeping {Sleep}s until reset", 
+                    snapshot.Remaining, requestsPerSubreddit, snapshot.ResetSeconds);
+                try { await Task.Delay(TimeSpan.FromSeconds(snapshot.ResetSeconds), stoppingToken); } catch { }
                 continue;
             }
 
-            // Get next subreddit to poll
-            var batch = _pollTracker.GetOldestBatch(requestsPerSubreddit, requestsPerSubreddit);
-            if (batch.Count == 0)
+            if (DateTime.UtcNow < nextAllowed)
             {
-                // No subreddits available; short delay and continue
-                _logger.LogDebug("No subreddits available to poll; waiting 5 seconds");
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-                }
-                catch
-                {
-                    // Ignore cancellation
-                }
+                var delay = nextAllowed - DateTime.UtcNow;
+                _logger.LogDebug("Waiting {Delay} before next poll (Spacing={Spacing}s)", delay, spacing.TotalSeconds);
+                try { await Task.Delay(delay, stoppingToken); } catch { }
+            }
+
+            if (stoppingToken.IsCancellationRequested) break;
+
+            var subreddit = _pollTracker.GetOldest();
+            if (subreddit == null)
+            {
+                _logger.LogWarning("No subreddits configured; sleeping 30s");
+                try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken); } catch { }
                 continue;
             }
 
-            var subreddit = batch[0];
-
-            // Calculate target spacing between polls
-            var maxPollsPerWindow = Settings.MaxRequestsPerMinute / requestsPerSubreddit;
-            var spacing = 60.0 / maxPollsPerWindow; // spacing in seconds (double precision)
-            
-            // Calculate scheduled time for this poll
-            var scheduledTime = windowStart.AddSeconds(pollsExecuted * spacing);
-            var now = DateTime.UtcNow;
-            
-            // If we're ahead of schedule, delay until scheduled time
-            if (now < scheduledTime)
-            {
-                var delayTime = scheduledTime - now;
-                _logger.LogDebug("Delaying {Delay}ms until scheduled poll time for r/{Subreddit}", 
-                    delayTime.TotalMilliseconds, subreddit);
-                try
-                {
-                    await Task.Delay(delayTime, stoppingToken);
-                }
-                catch
-                {
-                    // Ignore cancellation
-                }
-            }
-
-            if (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-
-            // Poll the subreddit
-            var currentPollNumber = pollsExecuted + 1;
-            await PollSubredditAsync(subreddit, currentPollNumber, maxPollsPerWindow, stoppingToken);
-            requestCount += requestsPerSubreddit;
-            pollsExecuted++;
+            pollSequence++;
+            await PollSubredditAsync(subreddit, pollSequence, spacing, stoppingToken);
+            lastPollTime = DateTime.UtcNow;
             _pollTracker.MarkPolled(subreddit);
-            
-            _logger.LogInformation("Polled r/{Subreddit}; {CurrentPoll}/{TotalPolls} polls in window at {Spacing}s spacing", 
-                subreddit, currentPollNumber, maxPollsPerWindow, spacing);
         }
 
         await _seenPostsStore.SaveAsync();
         _logger.LogInformation("RssTracker Worker shutting down");
     }
 
-    private async Task PollSubredditAsync(string subreddit, int currentPollNumber, int totalPollsThisWindow, CancellationToken stoppingToken)
+    private async Task PollSubredditAsync(string subreddit, int pollNumber, TimeSpan spacing, CancellationToken stoppingToken)
     {
         try
         {
-            var postItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Post);
-            var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Comment);
+            var postResult = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Post);
+            _rateLimitMonitor.Update(postResult.RateLimit);
+            var commentResult = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Comment);
+            _rateLimitMonitor.Update(commentResult.RateLimit);
 
-            var allItems = postItems.Concat(commentItems).ToList();
-            _logger.LogDebug("Fetched {Count} total items from r/{Subreddit} (Poll {CurrentPoll}/{TotalPolls})", 
-                allItems.Count, subreddit, currentPollNumber, totalPollsThisWindow);
+            var allItems = postResult.Items.Concat(commentResult.Items).ToList();
+            var snap = _rateLimitMonitor.GetCurrent();
+            if (snap != null)
+            {
+                _logger.LogInformation("Poll {Poll} r/{Subreddit} items={Count} Rate Used={Used} Rem={Rem} ResetIn={Reset}s Spacing={Spacing}s", 
+                    pollNumber, subreddit, allItems.Count, snap.Used, snap.Remaining, snap.ResetSeconds, spacing.TotalSeconds);
+            }
+            else
+            {
+                _logger.LogInformation("Poll {Poll} r/{Subreddit} items={Count} (No rate data) Spacing={Spacing}s", 
+                    pollNumber, subreddit, allItems.Count, spacing.TotalSeconds);
+            }
 
             foreach (var item in allItems)
             {
@@ -177,8 +128,8 @@ public class Worker : BackgroundService
                 var (hasMatch, matchedPattern) = _keywordMatcher.FindMatch(item.Content);
                 if (hasMatch && matchedPattern != null)
                 {
-                    _logger.LogInformation("Match found in {Type} by {Author} on r/{Subreddit} - Pattern: {Pattern} (Poll {CurrentPoll}/{TotalPolls})",
-                        item.Type, item.Author, subreddit, matchedPattern, currentPollNumber, totalPollsThisWindow);
+                    _logger.LogInformation("Match r/{Subreddit} {Type} by {Author} Pattern={Pattern} Poll={Poll}", 
+                        subreddit, item.Type, item.Author, matchedPattern, pollNumber);
                     await _discordNotifier.SendNotificationAsync(item, matchedPattern);
                     _seenPostsStore.MarkAsSeen(item.Id);
                 }
@@ -186,8 +137,7 @@ public class Worker : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error polling feeds for r/{Subreddit} (Poll {CurrentPoll}/{TotalPolls})", 
-                subreddit, currentPollNumber, totalPollsThisWindow);
+            _logger.LogError(ex, "Error polling r/{Subreddit} Poll={Poll}", subreddit, pollNumber);
         }
     }
 }

@@ -21,7 +21,7 @@ public class RssFeedService
     }
 
     // Changed feedType from string to enum RssFeedItemType
-    public async Task<List<RssFeedItem>> FetchFeedAsync(string subreddit, RssFeedItemType itemType)
+    public async Task<FeedFetchResult> FetchFeedAsync(string subreddit, RssFeedItemType itemType)
     {
         if (itemType is not (RssFeedItemType.Post or RssFeedItemType.Comment))
         {
@@ -45,6 +45,23 @@ public class RssFeedService
                 var response = await _httpClient.GetAsync(url);
                 response.EnsureSuccessStatusCode();
 
+                RateLimitSnapshot? snapshot = null;
+                if (response.Headers.TryGetValues("X-Ratelimit-Used", out var usedVals) &&
+                    response.Headers.TryGetValues("X-Ratelimit-Remaining", out var remainingVals) &&
+                    response.Headers.TryGetValues("X-Ratelimit-Reset", out var resetVals))
+                {
+                    if (double.TryParse(usedVals.FirstOrDefault(), out var usedRaw) &&
+                        double.TryParse(remainingVals.FirstOrDefault(), out var remainingRaw) &&
+                        double.TryParse(resetVals.FirstOrDefault(), out var resetRaw))
+                    {
+                        snapshot = new RateLimitSnapshot(
+                            Used: (int)Math.Round(usedRaw),
+                            Remaining: (int)Math.Round(remainingRaw),
+                            ResetSeconds: (int)Math.Round(resetRaw),
+                            CapturedAtUtc: DateTime.UtcNow);
+                    }
+                }
+
                 using var stream = await response.Content.ReadAsStreamAsync();
                 using var xmlReader = XmlReader.Create(stream);
                 var feed = SyndicationFeed.Load(xmlReader);
@@ -64,10 +81,18 @@ public class RssFeedService
                     items.Add(feedItem);
                 }
 
-                _logger.LogDebug("Successfully fetched {Count} items from {FeedType} feed for r/{Subreddit}", 
-                    items.Count, itemType, subreddit);
-                
-                return items;
+                if (snapshot != null)
+                {
+                    _logger.LogDebug("Fetched {Count} items from {FeedType} r/{Subreddit} (Rate Used={Used} Remaining={Remaining} ResetIn={Reset}s)",
+                        items.Count, itemType, subreddit, snapshot.Used, snapshot.Remaining, snapshot.ResetSeconds);
+                }
+                else
+                {
+                    _logger.LogDebug("Fetched {Count} items from {FeedType} r/{Subreddit} (No rate headers)",
+                        items.Count, itemType, subreddit);
+                }
+
+                return new FeedFetchResult(items, snapshot);
             }
             catch (HttpRequestException ex)
             {
@@ -88,7 +113,7 @@ public class RssFeedService
             }
         }
 
-        return items;
+        return new FeedFetchResult(items, null);
     }
 
     private static string GetContentFromItem(SyndicationItem item)
