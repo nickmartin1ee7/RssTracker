@@ -64,7 +64,7 @@ public class RssFeedService
                     items.Add(feedItem);
                 }
 
-                _logger.LogInformation("Successfully fetched {Count} items from {FeedType} feed for r/{Subreddit}", 
+                _logger.LogDebug("Successfully fetched {Count} items from {FeedType} feed for r/{Subreddit}", 
                     items.Count, itemType, subreddit);
                 
                 return items;

@@ -45,18 +45,32 @@ public class Worker : BackgroundService
 
         var windowStart = DateTime.UtcNow;
         var requestCount = 0;
+        var pollsExecuted = 0;
         const int requestsPerSubreddit = 2; // posts + comments
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Check if window expired
+            var timeSinceWindowStart = DateTime.UtcNow - windowStart;
+            if (timeSinceWindowStart >= TimeSpan.FromSeconds(60))
+            {
+                // Reset window
+                windowStart = DateTime.UtcNow;
+                requestCount = 0;
+                pollsExecuted = 0;
+                _logger.LogDebug("Window reset at {Time}", windowStart);
+            }
+
             var remainingCapacity = Settings.MaxRequestsPerMinute - requestCount;
 
+            // If no capacity left in current window, wait until next window
             if (remainingCapacity < requestsPerSubreddit)
             {
                 var until = windowStart.AddMinutes(1) - DateTime.UtcNow;
                 if (until > TimeSpan.Zero)
                 {
-                    _logger.LogDebug("Window exhausted (used {Used}/{Max}); sleeping {Sleep} until next window", requestCount, Settings.MaxRequestsPerMinute, until);
+                    _logger.LogDebug("Window exhausted (used {Used}/{Max}); sleeping {Sleep} until next window", 
+                        requestCount, Settings.MaxRequestsPerMinute, until);
                     try
                     {
                         await Task.Delay(until, stoppingToken);
@@ -70,47 +84,83 @@ public class Worker : BackgroundService
                 // Reset window
                 windowStart = DateTime.UtcNow;
                 requestCount = 0;
+                pollsExecuted = 0;
                 continue;
             }
 
-            var batch = _pollTracker.GetOldestBatch(remainingCapacity, requestsPerSubreddit);
+            // Get next subreddit to poll
+            var batch = _pollTracker.GetOldestBatch(requestsPerSubreddit, requestsPerSubreddit);
             if (batch.Count == 0)
             {
-                throw new InvalidOperationException("No subreddits available to poll, but capacity available.");
+                // No subreddits available; short delay and continue
+                _logger.LogDebug("No subreddits available to poll; waiting 5 seconds");
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                }
+                catch
+                {
+                    // Ignore cancellation
+                }
+                continue;
             }
 
-            foreach (var subreddit in batch)
+            var subreddit = batch[0];
+
+            // Calculate target spacing between polls
+            var maxPollsPerWindow = Settings.MaxRequestsPerMinute / requestsPerSubreddit;
+            var spacing = 60.0 / maxPollsPerWindow; // spacing in seconds (double precision)
+            
+            // Calculate scheduled time for this poll
+            var scheduledTime = windowStart.AddSeconds(pollsExecuted * spacing);
+            var now = DateTime.UtcNow;
+            
+            // If we're ahead of schedule, delay until scheduled time
+            if (now < scheduledTime)
             {
-                if (stoppingToken.IsCancellationRequested)
+                var delayTime = scheduledTime - now;
+                _logger.LogDebug("Delaying {Delay}ms until scheduled poll time for r/{Subreddit}", 
+                    delayTime.TotalMilliseconds, subreddit);
+                try
                 {
-                    break;
+                    await Task.Delay(delayTime, stoppingToken);
                 }
-
-                var matches = await PollSubredditAsync(subreddit, stoppingToken);
-                requestCount += requestsPerSubreddit;
-                _pollTracker.MarkPolled(subreddit);
-
-                if (requestCount >= Settings.MaxRequestsPerMinute)
+                catch
                 {
-                    break; // window will reset in next loop iteration
+                    // Ignore cancellation
                 }
             }
+
+            if (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            // Poll the subreddit
+            var currentPollNumber = pollsExecuted + 1;
+            await PollSubredditAsync(subreddit, currentPollNumber, maxPollsPerWindow, stoppingToken);
+            requestCount += requestsPerSubreddit;
+            pollsExecuted++;
+            _pollTracker.MarkPolled(subreddit);
+            
+            _logger.LogInformation("Polled r/{Subreddit} ({CurrentPoll}/{TotalPolls} polls in window)", 
+                subreddit, currentPollNumber, maxPollsPerWindow);
         }
 
         await _seenPostsStore.SaveAsync();
         _logger.LogInformation("RssTracker Worker shutting down");
     }
 
-    private async Task<int> PollSubredditAsync(string subreddit, CancellationToken stoppingToken)
+    private async Task PollSubredditAsync(string subreddit, int currentPollNumber, int totalPollsThisWindow, CancellationToken stoppingToken)
     {
-        var matches = 0;
         try
         {
             var postItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Post);
             var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Comment);
 
             var allItems = postItems.Concat(commentItems).ToList();
-            _logger.LogDebug("Fetched {Count} total items from r/{Subreddit}", allItems.Count, subreddit);
+            _logger.LogDebug("Fetched {Count} total items from r/{Subreddit} (Poll {CurrentPoll}/{TotalPolls})", 
+                allItems.Count, subreddit, currentPollNumber, totalPollsThisWindow);
 
             foreach (var item in allItems)
             {
@@ -127,18 +177,17 @@ public class Worker : BackgroundService
                 var (hasMatch, matchedPattern) = _keywordMatcher.FindMatch(item.Content);
                 if (hasMatch && matchedPattern != null)
                 {
-                    _logger.LogInformation("Match found in {Type} by {Author} on r/{Subreddit} - Pattern: {Pattern}",
-                        item.Type, item.Author, subreddit, matchedPattern);
+                    _logger.LogInformation("Match found in {Type} by {Author} on r/{Subreddit} - Pattern: {Pattern} (Poll {CurrentPoll}/{TotalPolls})",
+                        item.Type, item.Author, subreddit, matchedPattern, currentPollNumber, totalPollsThisWindow);
                     await _discordNotifier.SendNotificationAsync(item, matchedPattern);
-                    matches++;
                     _seenPostsStore.MarkAsSeen(item.Id);
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error polling feeds for r/{Subreddit}", subreddit);
+            _logger.LogError(ex, "Error polling feeds for r/{Subreddit} (Poll {CurrentPoll}/{TotalPolls})", 
+                subreddit, currentPollNumber, totalPollsThisWindow);
         }
-        return matches;
     }
 }
