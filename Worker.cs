@@ -46,7 +46,6 @@ public class Worker : BackgroundService
         var windowStart = DateTime.UtcNow;
         var requestCount = 0;
         const int requestsPerSubreddit = 2; // posts + comments
-        var matchesThisWindow = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -71,7 +70,6 @@ public class Worker : BackgroundService
                 // Reset window
                 windowStart = DateTime.UtcNow;
                 requestCount = 0;
-                matchesThisWindow = 0;
                 continue;
             }
 
@@ -89,7 +87,6 @@ public class Worker : BackgroundService
                 }
 
                 var matches = await PollSubredditAsync(subreddit, stoppingToken);
-                matchesThisWindow += matches;
                 requestCount += requestsPerSubreddit;
                 _pollTracker.MarkPolled(subreddit);
 
