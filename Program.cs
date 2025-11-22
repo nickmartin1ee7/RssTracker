@@ -91,6 +91,8 @@ static void ConfigureServices(HostApplicationBuilder builder, Settings settings)
         return new DiscordNotifier(httpClient, settings.DiscordWebhookUrl, settings.MaxRetryDelaySeconds, logger);
     });
 
+    builder.Services.AddSingleton<SubredditPollTracker>();
+
     // Worker service
     builder.Services.AddHostedService<Worker>();
 }

@@ -12,6 +12,7 @@ public class Worker : BackgroundService
     private readonly RssFeedService _rssFeedService;
     private readonly KeywordMatcher _keywordMatcher;
     private readonly DiscordNotifier _discordNotifier;
+    private readonly SubredditPollTracker _pollTracker;
 
     private Settings Settings => _settingsMonitor.CurrentValue;
 
@@ -21,7 +22,8 @@ public class Worker : BackgroundService
         SeenPostsStore seenPostsStore,
         RssFeedService rssFeedService,
         KeywordMatcher keywordMatcher,
-        DiscordNotifier discordNotifier)
+        DiscordNotifier discordNotifier,
+        SubredditPollTracker pollTracker)
     {
         _logger = logger;
         _settingsMonitor = settingsMonitor;
@@ -29,91 +31,117 @@ public class Worker : BackgroundService
         _rssFeedService = rssFeedService;
         _keywordMatcher = keywordMatcher;
         _discordNotifier = discordNotifier;
+        _pollTracker = pollTracker;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("RssTracker Worker starting up");
-        _logger.LogInformation("Monitoring {Count} subreddits with {PatternCount} keyword patterns", 
-            Settings.Subreddits.Length, Settings.KeywordPatterns.Length);
+        _logger.LogInformation("Monitoring {Count} subreddits with {PatternCount} keyword patterns (MaxRequestsPerMinute={Max})",
+            Settings.Subreddits.Length, Settings.KeywordPatterns.Length, Settings.MaxRequestsPerMinute);
 
+        _pollTracker.Initialize(Settings.Subreddits);
         await _seenPostsStore.LoadAsync();
 
-        var pollInterval = TimeSpan.FromSeconds(Settings.PollIntervalSeconds);
-        _logger.LogInformation("Poll interval set to {Interval}", pollInterval);
+        var windowStart = DateTime.UtcNow;
+        var requestCount = 0;
+        const int requestsPerSubreddit = 2; // posts + comments
+        var matchesThisWindow = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
+            var remainingCapacity = Settings.MaxRequestsPerMinute - requestCount;
+
+            if (remainingCapacity < requestsPerSubreddit)
             {
-                await ProcessFeedsAsync(stoppingToken);
-                await _seenPostsStore.SaveAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing feeds");
+                var until = windowStart.AddMinutes(1) - DateTime.UtcNow;
+                if (until > TimeSpan.Zero)
+                {
+                    _logger.LogDebug("Window exhausted (used {Used}/{Max}); sleeping {Sleep} until next window", requestCount, Settings.MaxRequestsPerMinute, until);
+                    try
+                    {
+                        await Task.Delay(until, stoppingToken);
+                    }
+                    catch
+                    {
+                        // Ignore cancellation
+                    }
+                }
+
+                // Reset window
+                windowStart = DateTime.UtcNow;
+                requestCount = 0;
+                matchesThisWindow = 0;
+                continue;
             }
 
-            await Task.Delay(pollInterval, stoppingToken);
+            var batch = _pollTracker.GetOldestBatch(remainingCapacity, requestsPerSubreddit);
+            if (batch.Count == 0)
+            {
+                throw new InvalidOperationException("No subreddits available to poll, but capacity available.");
+            }
+
+            foreach (var subreddit in batch)
+            {
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                var matches = await PollSubredditAsync(subreddit, stoppingToken);
+                matchesThisWindow += matches;
+                requestCount += requestsPerSubreddit;
+                _pollTracker.MarkPolled(subreddit);
+
+                if (requestCount >= Settings.MaxRequestsPerMinute)
+                {
+                    break; // window will reset in next loop iteration
+                }
+            }
         }
 
         await _seenPostsStore.SaveAsync();
         _logger.LogInformation("RssTracker Worker shutting down");
     }
 
-    private async Task ProcessFeedsAsync(CancellationToken stoppingToken)
+    private async Task<int> PollSubredditAsync(string subreddit, CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Starting feed processing cycle");
-
-        var totalMatches = 0;
-
-        foreach (var subreddit in Settings.Subreddits)
+        var matches = 0;
+        try
         {
-            if (stoppingToken.IsCancellationRequested)
-                break;
+            var postItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Post);
+            var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Comment);
 
-            try
+            var allItems = postItems.Concat(commentItems).ToList();
+            _logger.LogDebug("Fetched {Count} total items from r/{Subreddit}", allItems.Count, subreddit);
+
+            foreach (var item in allItems)
             {
-                var postItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Post);
-                var commentItems = await _rssFeedService.FetchFeedAsync(subreddit, RssFeedItemType.Comment);
-
-                var allItems = postItems.Concat(commentItems).ToList();
-                _logger.LogDebug("Fetched {Count} total items from r/{Subreddit}", allItems.Count, subreddit);
-
-                foreach (var item in allItems)
+                if (stoppingToken.IsCancellationRequested)
                 {
-                    if (stoppingToken.IsCancellationRequested)
-                        break;
+                    break;
+                }
 
-                    // Skip if we've seen this post/comment before
-                    if (_seenPostsStore.IsSeenPost(item.Id))
-                    {
-                        continue;
-                    }
+                if (_seenPostsStore.IsSeenPost(item.Id))
+                {
+                    continue;
+                }
 
-                    // Check for keyword matches
-                    var (hasMatch, matchedPattern) = _keywordMatcher.FindMatch(item.Content);
-
-                    if (hasMatch && matchedPattern != null)
-                    {
-                        _logger.LogInformation("Match found in {Type} by {Author} on r/{Subreddit} - Pattern: {Pattern}", 
-                            item.Type, item.Author, subreddit, matchedPattern);
-
-                        // Send Discord notification
-                        await _discordNotifier.SendNotificationAsync(item, matchedPattern);
-                        totalMatches++;
-
-                        // Mark as seen only if matched to prevent duplicate notifications
-                        _seenPostsStore.MarkAsSeen(item.Id);
-                    }
+                var (hasMatch, matchedPattern) = _keywordMatcher.FindMatch(item.Content);
+                if (hasMatch && matchedPattern != null)
+                {
+                    _logger.LogInformation("Match found in {Type} by {Author} on r/{Subreddit} - Pattern: {Pattern}",
+                        item.Type, item.Author, subreddit, matchedPattern);
+                    await _discordNotifier.SendNotificationAsync(item, matchedPattern);
+                    matches++;
+                    _seenPostsStore.MarkAsSeen(item.Id);
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing feeds for r/{Subreddit}", subreddit);
-            }
         }
-
-        _logger.LogInformation("Feed processing cycle complete. Found {TotalMatches} new matches", totalMatches);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error polling feeds for r/{Subreddit}", subreddit);
+        }
+        return matches;
     }
 }
