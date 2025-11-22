@@ -143,8 +143,8 @@ public class Worker : BackgroundService
             pollsExecuted++;
             _pollTracker.MarkPolled(subreddit);
             
-            _logger.LogInformation("Polled r/{Subreddit} ({CurrentPoll}/{TotalPolls} polls in window)", 
-                subreddit, currentPollNumber, maxPollsPerWindow);
+            _logger.LogInformation("Polled r/{Subreddit}; {CurrentPoll}/{TotalPolls} polls in window at {Spacing}s spacing", 
+                subreddit, currentPollNumber, maxPollsPerWindow, spacing);
         }
 
         await _seenPostsStore.SaveAsync();
