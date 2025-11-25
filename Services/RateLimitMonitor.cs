@@ -39,7 +39,8 @@ public class RateLimitMonitor
         var pollsRemaining = snap.Remaining / requestsPerSubreddit;
         if (pollsRemaining <= 0)
         {
-            return TimeSpan.FromSeconds(snap.ResetSeconds);
+            // Previously returned possibly 0s; enforce a minimum 1s to avoid tight log loop
+            return TimeSpan.FromSeconds(Math.Max(fallbackMaxRequestsPerMinute / 2 , snap.ResetSeconds));
         }
         var spacingSeconds = snap.ResetSeconds / Math.Max(1.0, pollsRemaining);
         if (spacingSeconds < 1) spacingSeconds = 1; // floor
