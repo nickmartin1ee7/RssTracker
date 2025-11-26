@@ -58,13 +58,12 @@ public class Worker : BackgroundService
 
             if (snapshot != null && snapshot.Remaining < requestsPerSubreddit)
             {
-                var sleepSeconds = snapshot.ResetSeconds == 0
-                    ? Settings.MaxRetryDelaySeconds
-                    : snapshot.ResetSeconds;
+                var sleepSeconds = Math.Max(snapshot.ResetSeconds, 1);
+
                 _logger.LogWarning("Rate limit low Remaining={Remaining} < {Needed}; sleeping {Sleep}s until reset", 
                     snapshot.Remaining, requestsPerSubreddit, sleepSeconds);
+                
                 try { await Task.Delay(TimeSpan.FromSeconds(sleepSeconds), stoppingToken); } catch { }
-                continue;
             }
 
             if (DateTime.UtcNow < nextAllowed)
