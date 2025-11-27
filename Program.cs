@@ -1,15 +1,31 @@
 using RssTracker;
 using RssTracker.Services;
+using Serilog;
 using System.Text.RegularExpressions;
 
-var builder = Host.CreateApplicationBuilder(args);
+try
+{
+    var builder = Host.CreateApplicationBuilder(args);
 
-Settings? settings = LoadAndValidateSettings(builder);
-ValidateRegex(settings);
-ConfigureServices(builder, settings);
+    Log.Logger = new LoggerConfiguration()
+        .Enrich.FromLogContext()
+        .ReadFrom.Configuration(builder.Configuration)
+#if DEBUG
+        .WriteTo.Console()
+#endif
+        .CreateLogger();
 
-var host = builder.Build();
-host.Run();
+    Settings? settings = LoadAndValidateSettings(builder);
+    ValidateRegex(settings);
+    ConfigureServices(builder, settings);
+
+    var host = builder.Build();
+    host.Run();
+}
+catch (Exception ex)
+{
+    Log.Logger.Fatal(ex, "Application failed to start");
+}
 
 static Settings LoadAndValidateSettings(HostApplicationBuilder builder)
 {
@@ -59,6 +75,8 @@ static void ConfigureServices(HostApplicationBuilder builder, Settings settings)
     builder.Services.Configure<Settings>(builder.Configuration.GetSection(Settings.Key));
 
     // Register services
+    builder.Services.AddSerilog();
+
     builder.Services.AddSingleton(sp =>
     {
         var logger = sp.GetRequiredService<ILogger<SeenPostsStore>>();
