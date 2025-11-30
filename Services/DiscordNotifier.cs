@@ -1,10 +1,12 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Net;
 using RssTracker.Models;
 
 namespace RssTracker.Services;
 
-public class DiscordNotifier
+public partial class DiscordNotifier
 {
     private readonly HttpClient _httpClient;
     private readonly string _webhookUrl;
@@ -65,40 +67,69 @@ public class DiscordNotifier
 
     private static object CreateWebhookPayload(RssFeedItem item, string matchedPattern)
     {
-        // Truncate content to 1000 characters for Discord embed
-        var contentPreview = item.Content.Length > 1000 
-            ? string.Concat(item.Content.AsSpan(0, 997), "...")
-            : item.Content;
+        var (originalPost, comment) = ParseOriginalAndComment(item.Content);
+
+        // Truncate each part to 1000 characters for Discord embed
+        static string? Truncate(string? s) =>
+            s?.Length > 1000
+                ? string.Concat(s.AsSpan(0, 997), "...")
+                : s;
+
+        var originalTruncated = Truncate(originalPost);
+        var commentTruncated = Truncate(comment);
 
         var titleType = item.Type == RssFeedItemType.Post ? "Post" : item.Type == RssFeedItemType.Comment ? "Comment" : "Item";
         var color = item.Type == RssFeedItemType.Post ? 0x5865F2 : item.Type == RssFeedItemType.Comment ? 0xEB459E : 0x2F3136;
 
-        return new
+        var embeds = new List<object>();
+
+        if (!string.IsNullOrWhiteSpace(originalTruncated))
         {
-            embeds = new[]
+            embeds.Add(new
             {
-                new
+                title = $"🔔 Keyword Match: {titleType}",
+                description = originalTruncated,
+                url = item.Link,
+                color,
+                fields = new[]
                 {
-                    title = $"🔔 Keyword Match: {titleType}",
-                    description = contentPreview,
-                    url = item.Link,
-                    color,
-                    fields = new[]
-                    {
-                        new { name = "Author", value = item.Author, inline = true },
-                        new { name = "Matched Pattern", value = $"`{matchedPattern}`", inline = true },
-                        new { name = "Timestamp", value = item.Timestamp == DateTime.MinValue
-                            ? $"<t:{item.Timestamp.ToUnixTimeSeconds()}:R>"
-                            : "N/A", inline = true }
-                    },
-                    footer = new
-                    {
-                        text = "RssTracker"
-                    },
-                    timestamp = item.Timestamp.ToString("o")
-                }
-            }
-        };
+                    new { name = "Comment", value = $"{commentTruncated ?? "N/A"}", inline = false},
+                    new { name = "Author", value = item.Author, inline = true },
+                    new { name = "Matched Pattern", value = $"`{matchedPattern}`", inline = true },
+                    new { name = "Timestamp", value = item.Timestamp == DateTime.MinValue
+                        ? $"<t:{item.Timestamp.ToUnixTimeSeconds()}:R>"
+                        : "N/A", inline = true }
+                },
+                footer = new { text = "RssTracker" },
+                timestamp = item.Timestamp.ToString("o")
+            });
+        }
+
+        return new { embeds = embeds.ToArray() };
+    }
+
+    private static (string originalPost, string? comment) ParseOriginalAndComment(string content)
+    {
+        const string SC_OFF = "<!-- SC_OFF -->";
+        const string SC_ON = "<!-- SC_ON -->";
+
+        var index = content.IndexOf(SC_OFF, StringComparison.Ordinal);
+        if (index < 0)
+        {
+            // No marker; treat entire content as one section
+            return (content.Trim(), string.Empty);
+        }
+
+        var original = content[..index].Trim();
+        var after = content[(index + SC_OFF.Length)..];
+        var endIndex = after.IndexOf(SC_ON, StringComparison.Ordinal);
+        var commentSection = endIndex >= 0 ? after[..endIndex] : after;
+
+        // Strip HTML tags and decode entities
+        var withoutTags = ComentHtmlRegex().Replace(commentSection, string.Empty).Trim();
+        var decoded = WebUtility.HtmlDecode(withoutTags);
+
+        return (original, decoded);
     }
 
     private static int CalculateExponentialBackoff(int attempt, int maxDelaySeconds)
@@ -107,4 +138,7 @@ public class DiscordNotifier
         var delay = Math.Pow(2, attempt);
         return (int)Math.Min(delay, maxDelaySeconds);
     }
+
+    [GeneratedRegex("<.*?>", RegexOptions.Singleline)]
+    private static partial Regex ComentHtmlRegex();
 }
