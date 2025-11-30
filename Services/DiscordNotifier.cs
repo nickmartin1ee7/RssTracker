@@ -87,7 +87,9 @@ public class DiscordNotifier
                     {
                         new { name = "Author", value = item.Author, inline = true },
                         new { name = "Matched Pattern", value = $"`{matchedPattern}`", inline = true },
-                        new { name = "Timestamp", value = $"<t:{item.Timestamp.ToUnixTimeSeconds()}:R>", inline = true }
+                        new { name = "Timestamp", value = item.Timestamp == DateTime.MinValue
+                            ? $"<t:{item.Timestamp.ToUnixTimeSeconds()}:R>"
+                            : "N/A", inline = true }
                     },
                     footer = new
                     {
