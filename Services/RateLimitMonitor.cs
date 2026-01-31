@@ -25,24 +25,29 @@ public class RateLimitMonitor
         }
     }
 
-    public TimeSpan ComputeSpacing(int requestsPerSubreddit, int fallbackMaxRequestsPerMinute)
+    public TimeSpan ComputeSpacing(int requestsPerSubreddit, int maxRequestsPerMinute)
     {
+        // Calculate user-configured minimum spacing
+        var configuredPollsPerMinute = maxRequestsPerMinute / (double)requestsPerSubreddit;
+        var configuredSpacingSeconds = configuredPollsPerMinute > 0 ? 60.0 / configuredPollsPerMinute : 60.0;
+
         var snap = GetCurrent();
         if (snap == null || snap.ResetSeconds <= 0 || snap.Remaining <= 0)
         {
-            var pollsPerMinute = fallbackMaxRequestsPerMinute / requestsPerSubreddit;
-            if (pollsPerMinute <= 0) return TimeSpan.FromSeconds(60);
-            var spacingSecondsFallback = 60.0 / pollsPerMinute;
-            return TimeSpan.FromSeconds(spacingSecondsFallback);
+            return TimeSpan.FromSeconds(Math.Max(configuredSpacingSeconds, 1));
         }
 
         var pollsRemaining = snap.Remaining / requestsPerSubreddit;
         if (pollsRemaining <= 0)
         {
-            // Previously returned possibly 0s; enforce a minimum 1s to avoid tight log loop
-            return TimeSpan.FromSeconds(Math.Max(fallbackMaxRequestsPerMinute / 2 , snap.ResetSeconds));
+            // Wait until reset, but respect configured minimum
+            return TimeSpan.FromSeconds(Math.Max(snap.ResetSeconds, configuredSpacingSeconds));
         }
-        var spacingSeconds = snap.ResetSeconds / Math.Max(1.0, pollsRemaining);
+
+        var rateLimitSpacingSeconds = snap.ResetSeconds / Math.Max(1.0, pollsRemaining);
+        
+        // Use the SLOWER of: user-configured limit OR Reddit's rate limit
+        var spacingSeconds = Math.Max(rateLimitSpacingSeconds, configuredSpacingSeconds);
         if (spacingSeconds < 1) spacingSeconds = 1; // floor
         return TimeSpan.FromSeconds(spacingSeconds);
     }
