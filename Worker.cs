@@ -69,7 +69,7 @@ public class Worker : BackgroundService
             if (DateTime.UtcNow < nextAllowed)
             {
                 var delay = nextAllowed - DateTime.UtcNow;
-                _logger.LogDebug("Waiting {Delay} before next poll (Spacing={Spacing}s)", delay, spacing.TotalSeconds);
+                _logger.LogInformation("Waiting {Delay} before next poll (Spacing={Spacing}s)", delay, spacing.TotalSeconds);
                 try { await Task.Delay(delay, stoppingToken); } catch { }
             }
 
