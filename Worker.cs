@@ -1,10 +1,12 @@
+using System.Net;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using RssTracker.Services;
 using RssTracker.Models;
 
 namespace RssTracker;
 
-public class Worker : BackgroundService
+public partial class Worker : BackgroundService
 {
     private readonly ILogger<Worker> _logger;
     private readonly IOptionsMonitor<Settings> _settingsMonitor;
@@ -127,7 +129,10 @@ public class Worker : BackgroundService
                     continue;
                 }
 
-                var (hasMatch, matchedPattern) = _keywordMatcher.FindMatch(item.Content);
+                var contentToMatch = item.Type == RssFeedItemType.Comment
+                    ? ExtractCommentBody(item.Content)
+                    : item.Content;
+                var (hasMatch, matchedPattern) = _keywordMatcher.FindMatch(contentToMatch);
                 if (hasMatch && matchedPattern != null)
                 {
                     _logger.LogInformation("Match r/{Subreddit} {Type} by {Author} Pattern={Pattern} Poll={Poll}", 
@@ -142,4 +147,21 @@ public class Worker : BackgroundService
             _logger.LogError(ex, "Error polling r/{Subreddit} Poll={Poll}", subreddit, pollNumber);
         }
     }
+
+    private static string ExtractCommentBody(string content)
+    {
+        const string SC_ON = "<!-- SC_ON -->";
+        var scOnIndex = content.IndexOf(SC_ON, StringComparison.Ordinal);
+        if (scOnIndex < 0)
+        {
+            return content.Trim();
+        }
+
+        var commentText = content[(scOnIndex + SC_ON.Length)..].Trim();
+        commentText = HtmlRegex().Replace(commentText, string.Empty).Trim();
+        return WebUtility.HtmlDecode(commentText);
+    }
+
+    [GeneratedRegex("<.*?>", RegexOptions.Singleline)]
+    private static partial Regex HtmlRegex();
 }
