@@ -97,8 +97,8 @@ public partial class DiscordNotifier
                     new { name = "Author", value = item.Author, inline = true },
                     new { name = "Matched Pattern", value = $"`{matchedPattern}`", inline = true },
                     new { name = "Timestamp", value = item.Timestamp == DateTime.MinValue
-                        ? $"<t:{item.Timestamp.ToUnixTimeSeconds()}:R>"
-                        : "N/A", inline = true }
+                        ? "N/A"
+                        : $"<t:{item.Timestamp.ToUnixTimeSeconds()}:R>", inline = true }
                 },
                 footer = new { text = "RssTracker" },
                 timestamp = item.Timestamp.ToString("o")
